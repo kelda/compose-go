@@ -20,7 +20,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/compose-spec/compose-go/template"
+	"github.com/kelda/compose-go/template"
 	"github.com/pkg/errors"
 )
 

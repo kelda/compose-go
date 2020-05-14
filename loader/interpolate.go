@@ -20,7 +20,7 @@ import (
 	"strconv"
 	"strings"
 
-	interp "github.com/compose-spec/compose-go/interpolation"
+	interp "github.com/kelda/compose-go/interpolation"
 	"github.com/pkg/errors"
 )
 

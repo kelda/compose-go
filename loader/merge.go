@@ -20,8 +20,8 @@ import (
 	"reflect"
 	"sort"
 
-	"github.com/compose-spec/compose-go/types"
 	"github.com/imdario/mergo"
+	"github.com/kelda/compose-go/types"
 	"github.com/pkg/errors"
 )
 
