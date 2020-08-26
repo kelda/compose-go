@@ -18,6 +18,7 @@ package loader
 
 import (
 	"fmt"
+	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
@@ -25,6 +26,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/imdario/mergo"
 
 	units "github.com/docker/go-units"
 	"github.com/kelda/compose-go/envfile"
@@ -45,10 +48,16 @@ type Options struct {
 	SkipValidation bool
 	// Skip interpolation
 	SkipInterpolation bool
+	// Skip normalization
+	SkipNormalization bool
+	// Skip consistency check
+	SkipConsistencyCheck bool
 	// Interpolation options
 	Interpolate *interp.Options
 	// Discard 'env_file' entries after resolving to 'environment' section
 	discardEnvFiles bool
+	// Set project name
+	Name string
 }
 
 // WithDiscardEnvFiles sets the Options to discard the `env_file` section after resolving to
@@ -76,7 +85,7 @@ func ParseYAML(source []byte) (map[string]interface{}, error) {
 }
 
 // Load reads a ConfigDetails and returns a fully loaded configuration
-func Load(configDetails types.ConfigDetails, options ...func(*Options)) (*types.Config, error) {
+func Load(configDetails types.ConfigDetails, options ...func(*Options)) (*types.Project, error) {
 	if len(configDetails.ConfigFiles) < 1 {
 		return nil, errors.Errorf("No files specified")
 	}
@@ -94,19 +103,11 @@ func Load(configDetails types.ConfigDetails, options ...func(*Options)) (*types.
 	}
 
 	configs := []*types.Config{}
-	var err error
-
 	for _, file := range configDetails.ConfigFiles {
 		configDict := file.Config
-		version := schema.Version(configDict)
-		if configDetails.Version == "" {
-			configDetails.Version = version
-		}
-		if configDetails.Version != version {
-			return nil, errors.Errorf("version mismatched between two composefiles : %v and %v", configDetails.Version, version)
-		}
 
 		if !opts.SkipInterpolation {
+			var err error
 			configDict, err = interpolateConfig(configDict, *opts.Interpolate)
 			if err != nil {
 				return nil, err
@@ -114,7 +115,7 @@ func Load(configDetails types.ConfigDetails, options ...func(*Options)) (*types.
 		}
 
 		if !opts.SkipValidation {
-			if err := schema.Validate(configDict, configDetails.Version); err != nil {
+			if err := schema.Validate(configDict); err != nil {
 				return nil, err
 			}
 		}
@@ -135,7 +136,37 @@ func Load(configDetails types.ConfigDetails, options ...func(*Options)) (*types.
 		configs = append(configs, cfg)
 	}
 
-	return merge(configs)
+	model, err := merge(configs)
+	if err != nil {
+		return nil, err
+	}
+
+	project := &types.Project{
+		Name:       opts.Name,
+		WorkingDir: configDetails.WorkingDir,
+		Services:   model.Services,
+		Networks:   model.Networks,
+		Volumes:    model.Volumes,
+		Secrets:    model.Secrets,
+		Configs:    model.Configs,
+		Extensions: model.Extensions,
+	}
+
+	if !opts.SkipNormalization {
+		err = normalize(project)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if !opts.SkipConsistencyCheck {
+		err = checkConsistency(project)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return project, nil
 }
 
 func groupXFieldsIntoExtensions(dict map[string]interface{}) map[string]interface{} {
@@ -157,9 +188,7 @@ func groupXFieldsIntoExtensions(dict map[string]interface{}) map[string]interfac
 
 func loadSections(config map[string]interface{}, configDetails types.ConfigDetails) (*types.Config, error) {
 	var err error
-	cfg := types.Config{
-		Version: schema.Version(config),
-	}
+	cfg := types.Config{}
 
 	var loaders = []struct {
 		key string
@@ -394,6 +423,39 @@ func LoadServices(servicesDict map[string]interface{}, workingDir string, lookup
 		if err != nil {
 			return nil, err
 		}
+
+		if serviceConfig.Extends != nil {
+			file := serviceConfig.Extends["file"]
+			service := serviceConfig.Extends["service"]
+			var source interface{}
+			if file == nil {
+				// extends a service from same file
+				source = servicesDict[*service]
+			} else {
+				if !filepath.IsAbs(*file) {
+					absolute := filepath.Join(workingDir, *file)
+					file = &absolute
+				}
+				bytes, err := ioutil.ReadFile(*file)
+				if err != nil {
+					return nil, err
+				}
+				source, err = ParseYAML(bytes)
+				if err != nil {
+					return nil, err
+				}
+			}
+			baseService, err := LoadService(name, source.(map[string]interface{}), workingDir, lookupEnv)
+			if err != nil {
+				return nil, err
+			}
+
+			if err := mergo.Merge(baseService, serviceConfig, mergo.WithAppendSlice, mergo.WithOverride, mergo.WithTransformers(serviceSpecials)); err != nil {
+				return nil, errors.Wrapf(err, "cannot merge service %s", name)
+			}
+			serviceConfig = baseService
+		}
+
 		services = append(services, *serviceConfig)
 	}
 

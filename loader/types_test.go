@@ -39,9 +39,12 @@ func TestMarshallConfig(t *testing.T) {
 	assert.Check(t, is.Equal(expected, string(actual)))
 
 	// Make sure the expected still
-	dict, err := ParseYAML([]byte("version: '3.7'\n" + expected))
+	dict, err := ParseYAML([]byte(expected))
 	assert.NilError(t, err)
-	_, err = Load(buildConfigDetails(dict, map[string]string{}))
+	_, err = Load(buildConfigDetails(dict, map[string]string{}), func(options *Options) {
+		options.SkipNormalization = true
+		options.SkipConsistencyCheck = true
+	})
 	assert.NilError(t, err)
 }
 
@@ -60,6 +63,9 @@ func TestJSONMarshallConfig(t *testing.T) {
 
 	dict, err := ParseYAML([]byte(expected))
 	assert.NilError(t, err)
-	_, err = Load(buildConfigDetails(dict, map[string]string{}))
+	_, err = Load(buildConfigDetails(dict, map[string]string{}), func(options *Options) {
+		options.SkipNormalization = true
+		options.SkipConsistencyCheck = true
+	})
 	assert.NilError(t, err)
 }
