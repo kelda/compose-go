@@ -419,49 +419,61 @@ func formatInvalidKeyError(keyPrefix string, key interface{}) error {
 func LoadServices(servicesDict map[string]interface{}, workingDir string, lookupEnv template.Mapping) ([]types.ServiceConfig, error) {
 	var services []types.ServiceConfig
 
-	for name, serviceDef := range servicesDict {
-		serviceConfig, err := LoadService(name, serviceDef.(map[string]interface{}), workingDir, lookupEnv)
+	for name := range servicesDict {
+		serviceConfig, err := loadServiceWithExtends(name, servicesDict, workingDir, lookupEnv, 0)
 		if err != nil {
 			return nil, err
-		}
-
-		if serviceConfig.Extends != nil {
-			file := serviceConfig.Extends["file"]
-			service := serviceConfig.Extends["service"]
-			var source interface{}
-			if file == nil {
-				// extends a service from same file
-				source = servicesDict[*service]
-			} else {
-				if !filepath.IsAbs(*file) {
-					absolute := filepath.Join(workingDir, *file)
-					file = &absolute
-				}
-				bytes, err := ioutil.ReadFile(*file)
-				if err != nil {
-					return nil, err
-				}
-				parsedFile, err := ParseYAML(bytes)
-				if err != nil {
-					return nil, err
-				}
-				source = getSection(parsedFile, "services")[*service]
-			}
-			baseService, err := LoadService(name, source.(map[string]interface{}), workingDir, lookupEnv)
-			if err != nil {
-				return nil, err
-			}
-
-			if err := mergo.Merge(baseService, serviceConfig, mergo.WithAppendSlice, mergo.WithOverride, mergo.WithTransformers(serviceSpecials)); err != nil {
-				return nil, errors.Wrapf(err, "cannot merge service %s", name)
-			}
-			serviceConfig = baseService
 		}
 
 		services = append(services, *serviceConfig)
 	}
 
 	return services, nil
+}
+
+func loadServiceWithExtends(name string, servicesDict map[string]interface{}, workingDir string, lookupEnv template.Mapping, depth int) (*types.ServiceConfig, error) {
+	serviceConfig, err := LoadService(name, servicesDict[name].(map[string]interface{}), workingDir, lookupEnv)
+	if err != nil {
+		return nil, err
+	}
+
+	if serviceConfig.Extends != nil {
+		sourceFileWorkingDir := workingDir
+		sourceFileServices := servicesDict
+		if file := serviceConfig.Extends["file"]; file != nil {
+			if !filepath.IsAbs(*file) {
+				absolute := filepath.Join(workingDir, *file)
+				file = &absolute
+			}
+			bytes, err := ioutil.ReadFile(*file)
+			if err != nil {
+				return nil, err
+			}
+			sourceFile, err := ParseYAML(bytes)
+			if err != nil {
+				return nil, err
+			}
+			sourceFileServices = getSection(sourceFile, "services")
+			sourceFileWorkingDir = filepath.Dir(*file)
+		}
+
+		if depth > 100 {
+			return nil, errors.New("recursion limit reached for extends. There's probably a circular reference")
+		}
+
+		service := serviceConfig.Extends["service"]
+		baseService, err := loadServiceWithExtends(*service, sourceFileServices, sourceFileWorkingDir, lookupEnv, depth+1)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := mergo.Merge(baseService, serviceConfig, mergo.WithAppendSlice, mergo.WithOverride, mergo.WithTransformers(serviceSpecials)); err != nil {
+			return nil, errors.Wrapf(err, "cannot merge service %s", name)
+		}
+		serviceConfig = baseService
+	}
+
+	return serviceConfig, nil
 }
 
 // LoadService produces a single ServiceConfig from a compose file Dict
