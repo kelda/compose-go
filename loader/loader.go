@@ -122,7 +122,7 @@ func Load(configDetails types.ConfigDetails, options ...func(*Options)) (*types.
 
 		configDict = groupXFieldsIntoExtensions(configDict)
 
-		cfg, err := loadSections(configDict, configDetails)
+		cfg, err := loadSections(configDict, configDetails, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -186,7 +186,7 @@ func groupXFieldsIntoExtensions(dict map[string]interface{}) map[string]interfac
 	return dict
 }
 
-func loadSections(config map[string]interface{}, configDetails types.ConfigDetails) (*types.Config, error) {
+func loadSections(config map[string]interface{}, configDetails types.ConfigDetails, opts *Options) (*types.Config, error) {
 	var err error
 	cfg := types.Config{}
 
@@ -197,7 +197,7 @@ func loadSections(config map[string]interface{}, configDetails types.ConfigDetai
 		{
 			key: "services",
 			fnc: func(config map[string]interface{}) error {
-				cfg.Services, err = LoadServices(config, configDetails.WorkingDir, configDetails.LookupEnv)
+				cfg.Services, err = LoadServices(config, configDetails.WorkingDir, configDetails.LookupEnv, opts)
 				return err
 			},
 		},
@@ -416,11 +416,11 @@ func formatInvalidKeyError(keyPrefix string, key interface{}) error {
 
 // LoadServices produces a ServiceConfig map from a compose file Dict
 // the servicesDict is not validated if directly used. Use Load() to enable validation
-func LoadServices(servicesDict map[string]interface{}, workingDir string, lookupEnv template.Mapping) ([]types.ServiceConfig, error) {
+func LoadServices(servicesDict map[string]interface{}, workingDir string, lookupEnv template.Mapping, opts *Options) ([]types.ServiceConfig, error) {
 	var services []types.ServiceConfig
 
 	for name := range servicesDict {
-		serviceConfig, err := loadServiceWithExtends(name, servicesDict, workingDir, lookupEnv, 0)
+		serviceConfig, err := loadServiceWithExtends(name, servicesDict, workingDir, lookupEnv, opts, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -431,7 +431,7 @@ func LoadServices(servicesDict map[string]interface{}, workingDir string, lookup
 	return services, nil
 }
 
-func loadServiceWithExtends(name string, servicesDict map[string]interface{}, workingDir string, lookupEnv template.Mapping, depth int) (*types.ServiceConfig, error) {
+func loadServiceWithExtends(name string, servicesDict map[string]interface{}, workingDir string, lookupEnv template.Mapping, opts *Options, depth int) (*types.ServiceConfig, error) {
 	if depth > 100 {
 		return nil, errors.New("recursion limit reached for extends. There's probably a circular reference")
 	}
@@ -445,7 +445,7 @@ func loadServiceWithExtends(name string, servicesDict map[string]interface{}, wo
 		baseServiceName := *serviceConfig.Extends["service"]
 		var baseService *types.ServiceConfig
 		if file := serviceConfig.Extends["file"]; file == nil {
-			baseService, err = loadServiceWithExtends(baseServiceName, servicesDict, workingDir, lookupEnv, depth+1)
+			baseService, err = loadServiceWithExtends(baseServiceName, servicesDict, workingDir, lookupEnv, opts, depth+1)
 			if err != nil {
 				return nil, err
 			}
@@ -465,8 +465,15 @@ func loadServiceWithExtends(name string, servicesDict map[string]interface{}, wo
 				return nil, err
 			}
 
+			if !opts.SkipInterpolation {
+				baseFile, err = interpolateConfig(baseFile, *opts.Interpolate)
+				if err != nil {
+					return nil, err
+				}
+			}
+
 			baseFileServices := getSection(baseFile, "services")
-			baseService, err = loadServiceWithExtends(baseServiceName, baseFileServices, filepath.Dir(baseFilePath), lookupEnv, depth+1)
+			baseService, err = loadServiceWithExtends(baseServiceName, baseFileServices, filepath.Dir(baseFilePath), lookupEnv, opts, depth+1)
 			if err != nil {
 				return nil, err
 			}
