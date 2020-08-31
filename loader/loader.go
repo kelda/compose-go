@@ -432,39 +432,65 @@ func LoadServices(servicesDict map[string]interface{}, workingDir string, lookup
 }
 
 func loadServiceWithExtends(name string, servicesDict map[string]interface{}, workingDir string, lookupEnv template.Mapping, depth int) (*types.ServiceConfig, error) {
+	if depth > 100 {
+		return nil, errors.New("recursion limit reached for extends. There's probably a circular reference")
+	}
+
 	serviceConfig, err := LoadService(name, servicesDict[name].(map[string]interface{}), workingDir, lookupEnv)
 	if err != nil {
 		return nil, err
 	}
 
 	if serviceConfig.Extends != nil {
-		sourceFileWorkingDir := workingDir
-		sourceFileServices := servicesDict
-		if file := serviceConfig.Extends["file"]; file != nil {
+		baseServiceName := *serviceConfig.Extends["service"]
+		var baseService *types.ServiceConfig
+		if file := serviceConfig.Extends["file"]; file == nil {
+			baseService, err = loadServiceWithExtends(baseServiceName, servicesDict, workingDir, lookupEnv, depth+1)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			// Resolve the path to the imported file, and load it.
+			baseFilePath := *file
 			if !filepath.IsAbs(*file) {
-				absolute := filepath.Join(workingDir, *file)
-				file = &absolute
+				baseFilePath = filepath.Join(workingDir, *file)
 			}
-			bytes, err := ioutil.ReadFile(*file)
+
+			bytes, err := ioutil.ReadFile(baseFilePath)
 			if err != nil {
 				return nil, err
 			}
-			sourceFile, err := ParseYAML(bytes)
+			baseFile, err := ParseYAML(bytes)
 			if err != nil {
 				return nil, err
 			}
-			sourceFileServices = getSection(sourceFile, "services")
-			sourceFileWorkingDir = filepath.Dir(*file)
-		}
 
-		if depth > 100 {
-			return nil, errors.New("recursion limit reached for extends. There's probably a circular reference")
-		}
+			baseFileServices := getSection(baseFile, "services")
+			baseService, err = loadServiceWithExtends(baseServiceName, baseFileServices, filepath.Dir(baseFilePath), lookupEnv, depth+1)
+			if err != nil {
+				return nil, err
+			}
 
-		service := serviceConfig.Extends["service"]
-		baseService, err := loadServiceWithExtends(*service, sourceFileServices, sourceFileWorkingDir, lookupEnv, depth+1)
-		if err != nil {
-			return nil, err
+			// Make paths relative to the importing Compose file. Note that we
+			// make the paths relative to `*file` rather than `baseFilePath` so
+			// that the resulting paths won't be absolute if `*file` isn't an
+			// absolute path.
+			baseFileParent := filepath.Dir(*file)
+			if baseService.Build != nil && !filepath.IsAbs(baseService.Build.Context) {
+				// Note that the Dockerfile is always defined relative to the
+				// build context, so there's no need to update the Dockerfile field.
+				baseService.Build.Context = filepath.Join(baseFileParent, baseService.Build.Context)
+			}
+
+			for i, vol := range baseService.Volumes {
+				if vol.Type != types.VolumeTypeBind {
+					continue
+				}
+
+				if !filepath.IsAbs(baseService.Volumes[i].Source) {
+					baseService.Volumes[i].Source = filepath.Join(baseFileParent, vol.Source)
+				}
+			}
 		}
 
 		if err := mergo.Merge(baseService, serviceConfig, mergo.WithAppendSlice, mergo.WithOverride, mergo.WithTransformers(serviceSpecials)); err != nil {
