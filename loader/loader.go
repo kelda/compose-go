@@ -52,6 +52,8 @@ type Options struct {
 	SkipNormalization bool
 	// Skip consistency check
 	SkipConsistencyCheck bool
+	// Skip extends
+	SkipExtends bool
 	// Interpolation options
 	Interpolate *interp.Options
 	// Discard 'env_file' entries after resolving to 'environment' section
@@ -441,7 +443,7 @@ func loadServiceWithExtends(name string, servicesDict map[string]interface{}, wo
 		return nil, err
 	}
 
-	if serviceConfig.Extends != nil {
+	if serviceConfig.Extends != nil && !opts.SkipExtends {
 		baseServiceName := *serviceConfig.Extends["service"]
 		var baseService *types.ServiceConfig
 		if file := serviceConfig.Extends["file"]; file == nil {
